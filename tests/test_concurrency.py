@@ -71,3 +71,8 @@ async def test_optimistic_concurrency_double_decision(event_store: EventStore):
     assert isinstance(failures[0][1], OptimisticConcurrencyError)
     assert failures[0][1].expected == 3
     assert failures[0][1].actual == 4
+
+# --- Direct execution support ---
+if __name__ == "__main__":
+    import sys
+    sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

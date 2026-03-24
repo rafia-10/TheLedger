@@ -26,21 +26,27 @@ uv sync
 ### Database Setup
 If you have a local postgres instance:
 ```bash
-psql -h localhost -p 5432 -d postgres -f src/schema.sql
+PGPASSWORD=supabase1224 psql -h db.dxscaeckamkplshxqkae.supabase.co -p 5432 -U postgres -d postgres -f src/schema.sql
 ```
 
-### Running Tests
-The test suite utilizes a local PostgreSQL instance for validation.
+### Running the Showroom Demo (The Big 5)
+A comprehensive demonstration script is provided to showcase the 5 core features: Live Workflow, Event Log, Dashboard Projections, Concurrency, and Replay & Upcasting.
 
 ```bash
 export PYTHONPATH=$PYTHONPATH:.
-uv run pytest tests/test_concurrency.py
+uv run python demo_full_lifecycle.py
+```
+
+## Running Tests
+The test suite validates concurrency, integrity, and projections.
+
+```bash
+uv run pytest tests/test_concurrency.py tests/test_integrity.py tests/test_projections.py
 ```
 
 ## Project Structure
-- `src/schema.sql`: PostgreSQL schema definitions.
-- `src/event_store.py`: Core `EventStore` class for append/load operations.
-- `src/models/events.py`: Pydantic models for all event types.
-- `src/aggregates/`: Domain logic and business rule enforcement.
-- `src/commands/`: Handlers for external actions.
-- `tests/`: Verification suite.
+- `src/schema.sql`: PostgreSQL schema and projection tables.
+- `src/event_store.py`: Core `EventStore` with cryptographic chaining.
+- `src/mcp/server.py`: FastMCP server for tool and resource exposure.
+- `demo_full_lifecycle.py`: High-fidelity showroom demonstration.
+- `DOMAIN_NOTES.md`: Technical architecture and design rationale.

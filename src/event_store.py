@@ -22,7 +22,16 @@ class EventStore:
 
     async def connect(self):
         if not self._pool:
-            self._pool = await asyncpg.create_pool(self._dsn)
+            try:
+                self._pool = await asyncpg.create_pool(
+                    self._dsn, 
+                    min_size=1, 
+                    max_size=10,
+                    command_timeout=60
+                )
+            except Exception as e:
+                # Provide more context for debugging
+                raise ConnectionError(f"Failed to connect to Event Store at {self._dsn.split('@')[-1]}: {e}")
 
     async def disconnect(self):
         if self._pool:

@@ -84,14 +84,6 @@ async def handle_credit_analysis_completed(
     agent.assert_model_version_current(model_version)
 
     # 3. Determine new events
-    # Rule: Confidence floor enforcement
-    final_risk = risk_tier
-    if confidence_score < 0.6:
-        # We might add a specific event for "ReviewRequiredDueToLowConfidence"
-        # but the prompt says just set recommendation = REFER in DecisionGenerated
-        # For CreditAnalysisCompleted, we record the result as is.
-        pass
-
     new_events = [
         BaseEvent(
             event_type="CreditAnalysisCompleted",
@@ -101,7 +93,7 @@ async def handle_credit_analysis_completed(
                 session_id=session_id,
                 model_version=model_version,
                 confidence_score=confidence_score,
-                risk_tier=final_risk,
+                risk_tier=risk_tier,
                 recommended_limit_usd=recommended_limit,
                 analysis_duration_ms=duration_ms,
                 input_data_hash=hash_inputs(input_data)
@@ -203,7 +195,8 @@ async def handle_generate_decision(
     contributing_sessions: List[str],
     basis_summary: str,
     model_versions: Dict[str, str],
-    correlation_id: Optional[str] = None
+    correlation_id: Optional[str] = None,
+    expected_version: Optional[int] = None
 ) -> int:
     app = await LoanApplicationAggregate.load(store, application_id)
     
@@ -231,7 +224,7 @@ async def handle_generate_decision(
     return await store.append(
         stream_id=f"loan-{application_id}",
         events=new_events,
-        expected_version=app.version,
+        expected_version=expected_version if expected_version is not None else app.version,
         correlation_id=correlation_id
     )
 
