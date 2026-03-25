@@ -1,71 +1,57 @@
-# The Ledger: Showroom Presentation Guide
-
-This guide provides a structured script to demonstrate the full capabilities of your event-sourced infrastructure.
-
-## 🧰 Preparation
-Before starting the demo, ensure your environment is ready:
-
-1.  **Switch to Supabase**: The project is now configured to use the Supabase cloud instance.
-2.  **Start the Dashboard API**:
-    ```bash
-    export PYTHONPATH=$PYTHONPATH:.
-    uv run python src/api/main.py
-    ```
-2.  **Open the Dashboard**: [http://localhost:8000](http://localhost:8000)
+## Before You Start
+1. Ensure your local PostgreSQL is running.
+2. Create the database: `createdb eventledger`
 
 ---
 
-## 🎭 The 5-Act Demonstration
+## Step 1: The Week Standard (Full Auditability)
+**Command:** `./.venv/bin/python3 validation_suite.py --step 1`
 
-### Act 1: The Live Workflow (Happy Path)
-**Goal**: Show a loan application moving from submission to final decision.
-
-1.  **Action**: Run the full lifecycle demo script.
-    ```bash
-    export PYTHONPATH=$PYTHONPATH:.
-    uv run python demo_full_lifecycle.py
-    ```
-2.  **Talking Points**: 
-    - "We are simulating a multi-agent AI system where specialized agents (Credit, Fraud, Compliance) collaborate on a single loan application."
-    - "Every action is an immutable event appended to a PostgreSQL-backed event store."
-    - "Notice the 'Gas Town' pattern: agents cannot act until they prove they've loaded the current context."
-
-### Act 2: Real-Time Dashboard (Projections)
-**Goal**: Show how events are projected into read-optimized models.
-
-1.  **Action**: Switch to the browser ([http://localhost:8000](http://localhost:8000)).
-2.  **Talking Points**:
-    - "The UI you see is populated in real-time by asynchronous projection daemons."
-    - "Point to the **AI Agent Performance** section: 'We track exactly which model version made which decision, providing full accountability for our AI workforce.'"
-
-### Act 3: Regulatory Audit (Temporal Proofs)
-**Goal**: Show how to verify decisions for compliance auditors.
-
-1.  **Action**: Click the **VIEW TRAIL** button on `demo-app-888`.
-2.  **Talking Points**:
-    - "If a regulator asks why a loan was approved, we don't just show the current state; we show the **Proof of Compliance**."
-    - "Every check has a unique SHA-256 hash. Because of our cryptographic chaining, if even one bit changed in the history, the audit would fail."
-
-### Act 4: Edge Cases (Concurrency & Rules)
-**Goal**: Demonstrate system robustness under stress.
-
-1.  **Action**: Reference the terminal output from Phase 5 of the demo script.
-2.  **Talking Points**:
-    - "We simulated two agents trying to make a decision at the exact same time."
-    - "The Ledger used **Optimistic Concurrency Control** (OCC) to ensure only the first agent succeeded, preventing 'split-brain' decisions or state corruption."
-
-### Act 5: Replay & Schema Evolution (Future-Proofing)
-**Goal**: Show how to upgrade the system without losing history.
-
-1.  **Action**: Reference Phase 6 of the demo script (Upcasting).
-2.  **Talking Points**:
-    - "What happens if we change our data schema next year? We don't run expensive migrations."
-    - "We use **Upcasters** to transform historical events into the new format on-the-fly as they are read from the stream."
+**The "Wow" Factor:**
+- Highlight the **Cryptographic Integrity Check**. Mention that this prevents any "back-dating" or manual tampering with financial records.
+- Show the **Event Stream**. Explain that we don't just store the "current state," but the entire journey of the application.
 
 ---
 
-## 🏆 Summary Checklist
-- [ ] **Immutable Record**: Every "click" and "thought" is recorded.
-- [ ] **Cryptographic Trust**: Tamper-proof event chains.
-- [ ] **Real-Time Visibility**: High-fidelity dashboard for operations.
-- [ ] **Regulatory Ready**: Instant time-travel and compliance proofs.
+## Step 2: Concurrency Under Pressure
+**Command:** `./.venv/bin/python3 validation_suite.py --step 2`
+
+**The "Wow" Factor:**
+- Explain how the system handles **Race Conditions**. This is critical for multi-agent systems where two AI agents might try to decide on the same loan.
+- Mention **Optimistic Concurrency Control (OCC)**. It ensures that the "latest" version wins, and the other must retry with updated data.
+
+---
+
+## Step 3: Temporal Compliance Query
+**Command:** `./.venv/bin/python3 validation_suite.py --step 3`
+
+**The "Wow" Factor:**
+- This is **Regulatory Time-Travel**. 
+- Demonstrate that you can recreate the exact compliance state of an application from months ago, even if the rules or the applicant's status have changed since then.
+
+---
+
+## Step 4: Upcasting & Immutability
+**Command:** `./.venv/bin/python3 validation_suite.py --step 4`
+
+**The "Wow" Factor:**
+- Show that the database **never changes (Immutable)**. 
+- Explain **Upcasting**: We can evolve our code (v1 -> v2) without ever needing complex data migrations. The system "upgrades" the data on-the-fly as it reads it.
+
+---
+
+## Step 5: Gas Town Recovery
+**Command:** `./.venv/bin/python3 validation_suite.py --step 5`
+
+**The "Wow" Factor:**
+- This is **Resilience**. 
+- Simulate a crash, and show that the AI agent can "reconstruct its memory" instantly by replaying the ledger. No work is ever lost.
+
+---
+
+## Step 6: What-If Counterfactual
+**Command:** `./.venv/bin/python3 validation_suite.py --step 6`
+
+**The "Wow" Factor:**
+- **Simulation and Risk Analysis**. 
+- Show how easy it is to test "What if we changed this one risk factor?" across the entire decision history. This is invaluable for refining business rules.

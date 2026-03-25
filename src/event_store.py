@@ -186,7 +186,13 @@ class EventStore:
         Re-calculates hashes for the entire stream and compares with stored hashes.
         Returns True if the chain is valid.
         """
-        events = await self.load_stream(stream_id)
+        # We must load RAW events (no upcasting) to verify integrity
+        query = "SELECT * FROM events WHERE stream_id = $1 ORDER BY stream_position ASC"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, stream_id)
+            
+        events = [self._row_to_event(row) for row in rows]
+        
         if not events:
             return True
             
