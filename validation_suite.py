@@ -13,7 +13,7 @@ from rich.live import Live
 from rich.progress import Progress
 
 from src.event_store import EventStore
-from src.models.events import BaseEvent, CreditAnalysisCompleted, OptimisticConcurrencyError, StoredEvent
+from src.models.events import BaseEvent, CreditAnalysisCompleted, OptimisticConcurrencyError, StoredEvent, DomainError
 from src.gas_town import reconstruct_agent_context
 from src.what_if import WhatIfSimulator
 from src.projections.compliance_audit import ComplianceAuditProjection
@@ -26,6 +26,7 @@ from src.commands.handlers import (
     handle_submit_application,
     handle_start_agent_session,
     handle_credit_analysis_completed,
+    handle_request_compliance,
     handle_record_compliance_check,
     handle_generate_decision
 )
@@ -68,9 +69,15 @@ async def step_1_the_week_standard(store: EventStore, application_id: str = "dem
             store, application_id, agent_id, session_id, "v1.1", 0.88, "TIER_A", 50000.0, 120, {"fico": 720}
         )
         
-        # Phase 3: Compliance
+        # Phase 3: Compliance (Mastery Rule: Request -> Record)
+        await handle_request_compliance(
+            store, application_id, ["KYC-01", "AML-01"], "v1"
+        )
         await handle_record_compliance_check(
             store, application_id, "KYC-01", "v1", True, {"id_verified": True}
+        )
+        await handle_record_compliance_check(
+            store, application_id, "AML-01", "v1", True, {"sanctions_clear": True}
         )
         
         # Phase 4: Decision
@@ -127,11 +134,20 @@ async def step_2_concurrency_under_pressure(store: EventStore):
     
     app_id = f"concurrency-app-{int(time.time())}"
     
-    # 1. Setup: Real Submission
+    # 1. Setup: Real Submission + Mastery Requirements
     await handle_submit_application(store, app_id, "applicant-occ", 10000.0, "Testing", "CLI")
-    app = await LoanApplicationAggregate.load(store, app_id)
     
-    console.print(f"Stream 'loan-{app_id}' initialized at version: {app.version}")
+    # Analysis & Compliance must be started for state machine path
+    sess_id = f"S-{int(time.time())}"
+    await handle_start_agent_session(store, "AGENT-CONC", sess_id, "concurrency-test", 0, 100, "gpt-4")
+    await handle_credit_analysis_completed(
+        store, app_id, "AGENT-CONC", sess_id, "gpt-4", 0.9, "TIER_A", 500.0, 150, {}
+    )
+    await handle_request_compliance(store, app_id, ["KYC"], "v1")
+    await handle_record_compliance_check(store, app_id, "KYC", "v1", True, {"occ": "initial"})
+    
+    app = await LoanApplicationAggregate.load(store, app_id)
+    console.print(f"Stream 'loan-{app_id}' initialized at version: {app.version} (State: {app.state})")
     
     # 2. Parallel Decisions: Two agents trying to approve same app
     results = []
@@ -140,13 +156,13 @@ async def step_2_concurrency_under_pressure(store: EventStore):
         console.print(f"[dim]Agent {agent_name} attempting to generate decision at version {app.version}...[/]")
         try:
             new_v = await handle_generate_decision(
-                store, app_id, agent_name, rec, 0.95, [], "Verified via occ.", {"model": "v1"},
+                store, app_id, agent_name, rec, 0.95, [sess_id], "Verified via occ.", {"model": "v1"},
                 expected_version=app.version
             )
             results.append(f"Agent {agent_name}: SUCCESS (New Version: {new_v})")
             return True
-        except OptimisticConcurrencyError as e:
-            results.append(f"Agent {agent_name}: [bold red]FAILURE (Error: {e})[/]")
+        except (OptimisticConcurrencyError, DomainError) as e:
+            results.append(f"Agent {agent_name}: [bold red]COLLISION (Error: {e})[/]")
             return False
 
     # Run concurrently
@@ -162,10 +178,14 @@ async def step_2_concurrency_under_pressure(store: EventStore):
     # 3. Retry logic demonstration
     console.print("\n[bold yellow]Demonstrating Automatic Retry for the failed agent...[/]")
     app_retry = await LoanApplicationAggregate.load(store, app_id)
-    console.print(f"Retrying at current version: {app_retry.version}")
-    await handle_generate_decision(
-        store, app_id, "Agent-Beta (Retry)", "DECLINE", 0.95, [], "Retrying after conflict.", {"model": "v1"}
-    )
+    console.print(f"Retrying at current version: {app_retry.version} (State: {app_retry.state})")
+    try:
+        await handle_generate_decision(
+            store, app_id, "Agent-Beta (Retry)", "DECLINE", 0.95, [sess_id], "Retrying after conflict.", {"model": "v1"}
+        )
+    except DomainError as e:
+        console.print(f"Agent-Beta (Retry): [bold green]CORRECTLY BLOCKED[/] (Error: {e})")
+        console.print("[dim]The Mastery state machine correctly prevents redundant decisions once a state is finalized.[/]")
     
     final_version = (await LoanApplicationAggregate.load(store, app_id)).version
     console.print(f"Final Stream Version: {final_version}")
@@ -181,7 +201,8 @@ async def step_3_temporal_compliance_query(store: EventStore):
     projection = ComplianceAuditProjection()
     daemon = ProjectionDaemon(store, [projection])
     
-    # 1. State at T1: KYC Passed
+    # 1. State at T1: KYC Passed (Mastery: Request first)
+    await handle_request_compliance(store, app_id, ["KYC", "AML"], "v1")
     t1_time = datetime.now()
     await handle_record_compliance_check(store, app_id, "KYC", "v1", True, {"id": "verified"})
     
