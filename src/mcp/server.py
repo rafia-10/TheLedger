@@ -19,12 +19,13 @@ load_dotenv()
 
 from mcp.server.fastmcp import FastMCP
 from src.event_store import EventStore
-from src.models.events import BaseEvent
+from src.models.events import BaseEvent, DomainError
 from src.commands.handlers import (
     handle_submit_application,
     handle_credit_analysis_completed,
     handle_fraud_screening_completed,
     handle_record_compliance_check,
+    handle_request_compliance,
     handle_generate_decision,
     handle_record_human_review,
     handle_start_agent_session,
@@ -65,6 +66,29 @@ def _get_daemon() -> ProjectionDaemon:
 # WRITE TOOLS (8)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def format_domain_error(e: DomainError) -> Dict[str, Any]:
+    """Mastery: Provide a structured error object with a suggested_action for LLMs."""
+    msg = str(e)
+    suggestion = "Consistently check preconditions before calling this tool."
+    
+    if "already exists" in msg:
+        suggestion = "Use a unique application_id or query the existing one."
+    elif "no context loaded" in msg:
+        suggestion = "Call start_agent_session before performing any analysis."
+    elif "Compliance status" in msg:
+        suggestion = "Record all mandatory compliance checks (Passed) before generating a decision."
+    elif "Token budget exceeded" in msg:
+        suggestion = "Start a new session or request a budget increase if authorized."
+    elif "Invalid state transition" in msg:
+        suggestion = "Consult the state machine (Rule 6) to ensure sequential processing."
+
+    return {
+        "status": "ERROR",
+        "error_type": "DomainRuleViolation",
+        "message": msg,
+        "suggested_action": suggestion
+    }
+
 @mcp.tool()
 async def submit_application(
     application_id: str,
@@ -73,17 +97,23 @@ async def submit_application(
     purpose: str,
     channel: str = "MCP",
 ) -> Dict[str, Any]:
-    """Submit a new loan application. Creates a new event stream."""
-    await store.connect()
-    version = await handle_submit_application(
-        store, application_id, applicant_id, amount, purpose, channel
-    )
-    return {
-        "status": "SUCCESS",
-        "application_id": application_id,
-        "stream_version": version,
-        "message": f"Application {application_id} submitted for ${amount:,.2f}",
-    }
+    """
+    Submit a new loan application. 
+    PRECONDITION: application_id must be unique. State must be None.
+    """
+    try:
+        await store.connect()
+        version = await handle_submit_application(
+            store, application_id, applicant_id, amount, purpose, channel
+        )
+        return {
+            "status": "SUCCESS",
+            "application_id": application_id,
+            "stream_version": version,
+            "message": f"Application {application_id} submitted for ${amount:,.2f}",
+        }
+    except DomainError as e:
+        return format_domain_error(e)
 
 
 @mcp.tool()
@@ -98,18 +128,27 @@ async def record_credit_analysis(
     duration_ms: int,
     input_data: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Record a completed credit analysis by an AI agent."""
-    await store.connect()
-    version = await handle_credit_analysis_completed(
-        store, application_id, agent_id, session_id, model_version,
-        confidence_score, risk_tier, recommended_limit, duration_ms, input_data,
-    )
-    return {
-        "status": "SUCCESS",
-        "application_id": application_id,
-        "risk_tier": risk_tier,
-        "stream_version": version,
-    }
+    """
+    Record a completed credit analysis by an AI agent.
+    PRECONDITIONS: 
+    1. Agent session must be initialized via start_agent_session.
+    2. Loan application must be in SUBMITTED state.
+    3. Session must be within token budget.
+    """
+    try:
+        await store.connect()
+        version = await handle_credit_analysis_completed(
+            store, application_id, agent_id, session_id, model_version,
+            confidence_score, risk_tier, recommended_limit, duration_ms, input_data,
+        )
+        return {
+            "status": "SUCCESS",
+            "application_id": application_id,
+            "risk_tier": risk_tier,
+            "stream_version": version,
+        }
+    except DomainError as e:
+        return format_domain_error(e)
 
 
 @mcp.tool()
@@ -122,18 +161,48 @@ async def record_fraud_screening(
     anomaly_flags: List[str],
     input_data: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Record a completed fraud screening by an AI agent."""
-    await store.connect()
-    version = await handle_fraud_screening_completed(
-        store, application_id, agent_id, session_id, model_version,
-        fraud_score, anomaly_flags, input_data,
-    )
-    return {
-        "status": "SUCCESS",
-        "application_id": application_id,
-        "fraud_score": fraud_score,
-        "stream_version": version,
-    }
+    """
+    Record a completed fraud screening by an AI agent.
+    PRECONDITION: Agent session must be initialized.
+    """
+    try:
+        await store.connect()
+        version = await handle_fraud_screening_completed(
+            store, application_id, agent_id, session_id, model_version,
+            fraud_score, anomaly_flags, input_data,
+        )
+        return {
+            "status": "SUCCESS",
+            "application_id": application_id,
+            "fraud_score": fraud_score,
+            "stream_version": version,
+        }
+    except DomainError as e:
+        return format_domain_error(e)
+
+
+@mcp.tool()
+async def request_compliance(
+    application_id: str,
+    checks_required: List[str],
+    regulation_version: str = "v1",
+) -> Dict[str, Any]:
+    """
+    Request mandatory compliance checks for an application.
+    PRECONDITION: Application must be in SUBMITTED or ANALYSIS_COMPLETE state.
+    """
+    try:
+        await store.connect()
+        version = await handle_request_compliance(
+            store, application_id, checks_required, regulation_version
+        )
+        return {
+            "status": "SUCCESS",
+            "application_id": application_id,
+            "stream_version": version,
+        }
+    except DomainError as e:
+        return format_domain_error(e)
 
 
 @mcp.tool()
@@ -146,19 +215,25 @@ async def record_compliance_check(
     failure_reason: Optional[str] = None,
     remediation: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Record a compliance check result (pass or fail)."""
-    await store.connect()
-    version = await handle_record_compliance_check(
-        store, application_id, rule_id, rule_version, passed, evidence,
-        failure_reason, remediation,
-    )
-    return {
-        "status": "SUCCESS",
-        "application_id": application_id,
-        "rule_id": rule_id,
-        "result": "PASSED" if passed else "FAILED",
-        "stream_version": version,
-    }
+    """
+    Record a compliance check result (pass or fail).
+    PRECONDITION: Loan application must exist.
+    """
+    try:
+        await store.connect()
+        version = await handle_record_compliance_check(
+            store, application_id, rule_id, rule_version, passed, evidence,
+            failure_reason, remediation,
+        )
+        return {
+            "status": "SUCCESS",
+            "application_id": application_id,
+            "rule_id": rule_id,
+            "result": "PASSED" if passed else "FAILED",
+            "stream_version": version,
+        }
+    except DomainError as e:
+        return format_domain_error(e)
 
 
 @mcp.tool()
@@ -171,19 +246,27 @@ async def generate_decision(
     basis_summary: str,
     model_versions: Dict[str, str],
 ) -> Dict[str, Any]:
-    """Generate an AI decision (APPROVE/DECLINE/REFER). Confidence < 0.6 auto-REFERs."""
-    await store.connect()
-    version = await handle_generate_decision(
-        store, application_id, orchestrator_agent_id, recommendation,
-        confidence_score, contributing_sessions, basis_summary, model_versions,
-    )
-    return {
-        "status": "SUCCESS",
-        "application_id": application_id,
-        "recommendation": recommendation,
-        "confidence_score": confidence_score,
-        "stream_version": version,
-    }
+    """
+    Generate an AI decision (APPROVE/DECLINE/REFER). 
+    PRECONDITIONS: 
+    1. Compliance status must be PASSED for all mandatory rules.
+    2. At least one contributing agent session must be provided.
+    """
+    try:
+        await store.connect()
+        version = await handle_generate_decision(
+            store, application_id, orchestrator_agent_id, recommendation,
+            confidence_score, contributing_sessions, basis_summary, model_versions,
+        )
+        return {
+            "status": "SUCCESS",
+            "application_id": application_id,
+            "recommendation": recommendation,
+            "confidence_score": confidence_score,
+            "stream_version": version,
+        }
+    except DomainError as e:
+        return format_domain_error(e)
 
 
 @mcp.tool()
@@ -194,18 +277,24 @@ async def record_human_review(
     final_decision: str,
     override_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Record a human reviewer's final decision."""
-    await store.connect()
-    version = await handle_record_human_review(
-        store, application_id, reviewer_id, override, final_decision, override_reason,
-    )
-    return {
-        "status": "SUCCESS",
-        "application_id": application_id,
-        "final_decision": final_decision,
-        "override": override,
-        "stream_version": version,
-    }
+    """
+    Record a human reviewer's final decision.
+    PRECONDITION: Application must be in PENDING_HUMAN state.
+    """
+    try:
+        await store.connect()
+        version = await handle_record_human_review(
+            store, application_id, reviewer_id, override, final_decision, override_reason,
+        )
+        return {
+            "status": "SUCCESS",
+            "application_id": application_id,
+            "final_decision": final_decision,
+            "override": override,
+            "stream_version": version,
+        }
+    except DomainError as e:
+        return format_domain_error(e)
 
 
 @mcp.tool()
@@ -216,20 +305,30 @@ async def start_agent_session(
     replay_position: int,
     token_count: int,
     model_version: str,
+    summary: Optional[str] = None,
+    budget: int = 50000
 ) -> Dict[str, Any]:
-    """Start a new agent session (Gas Town pattern — context before action)."""
-    await store.connect()
-    version = await handle_start_agent_session(
-        store, agent_id, session_id, context_source,
-        replay_position, token_count, model_version,
-    )
-    return {
-        "status": "SUCCESS",
-        "agent_id": agent_id,
-        "session_id": session_id,
-        "model_version": model_version,
-        "stream_version": version,
-    }
+    """
+    Start a new agent session (Gas Town pattern). 
+    PRECONDITION: session_id must be unique for the agent.
+    Provides budget allocation and context summary for LLM working memory.
+    """
+    try:
+        await store.connect()
+        version = await handle_start_agent_session(
+            store, agent_id, session_id, context_source,
+            replay_position, token_count, model_version,
+            summary=summary, budget=budget
+        )
+        return {
+            "status": "SUCCESS",
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "model_version": model_version,
+            "stream_version": version,
+        }
+    except DomainError as e:
+        return format_domain_error(e)
 
 
 @mcp.tool()

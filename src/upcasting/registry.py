@@ -8,6 +8,7 @@ CRITICAL INVARIANT: The raw database row is NEVER mutated.
     DB stores v1 → load_stream returns v2 → DB still contains v1.
 """
 from typing import Dict, Callable, Any
+from datetime import datetime
 from src.models.events import StoredEvent
 
 
@@ -25,15 +26,19 @@ class UpcasterRegistry:
 
     def upcast(self, event: StoredEvent) -> StoredEvent:
         """Continuously upcast an event until no more upcasters are found."""
-        current_payload = event.payload.copy()  # Never mutate original
+        current_payload = event.payload.copy()
         current_version = event.event_version
+        
+        # Mastery: Provide recorded_at in metadata for upcaster inference
+        effective_metadata = event.metadata.copy()
+        effective_metadata["recorded_at"] = event.recorded_at
 
         while True:
             upcaster = self._upcasters.get((event.event_type, current_version))
             if not upcaster:
                 break
 
-            current_payload = upcaster(current_payload)
+            current_payload = upcaster(current_payload, effective_metadata)
             current_version += 1
 
         if current_version != event.event_version:
@@ -45,23 +50,50 @@ class UpcasterRegistry:
 
 registry = UpcasterRegistry()
 
+def infer_model_from_date(recorded_at: datetime) -> str:
+    # Rule: Events before 2026-01-01 are model-v1-legacy
+    # Handle both naive and aware datetimes
+    compare_date = datetime(2026, 1, 1)
+    if recorded_at.tzinfo:
+        from datetime import timezone
+        compare_date = compare_date.replace(tzinfo=timezone.utc)
+        
+    if recorded_at < compare_date:
+        return "model-v1-legacy"
+    return "model-v2-production"
+
+def infer_reg_from_date(recorded_at: datetime) -> str:
+    compare_date = datetime(2026, 1, 1)
+    if recorded_at.tzinfo:
+        from datetime import timezone
+        compare_date = compare_date.replace(tzinfo=timezone.utc)
+
+    if recorded_at < compare_date:
+        return "REG-2025-BASE"
+    return "REG-2026-UPDATED"
 
 @registry.register("CreditAnalysisCompleted", 1)
-def credit_analysis_v1_to_v2(payload: Dict[str, Any]) -> Dict[str, Any]:
+def credit_analysis_v1_to_v2(payload: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
     CreditAnalysisCompleted v1 → v2
-    v1 lacked `regulatory_basis`. Infer from timestamp/risk_tier context.
+    Uses timestamp-based inference for consistency.
     """
     payload = payload.copy()
-    payload["regulatory_basis"] = payload.get("regulatory_basis", "INFERRED_FROM_LEGACY")
-    # v2 also normalizes confidence_score to 0-1 range
+    recorded_at = metadata.get("recorded_at", datetime.now())
+    if isinstance(recorded_at, str):
+        recorded_at = datetime.fromisoformat(recorded_at)
+
+    payload["model_version"] = payload.get("model_version", infer_model_from_date(recorded_at))
+    payload["regulatory_basis"] = payload.get("regulatory_basis", infer_reg_from_date(recorded_at))
+    
+    # v2 also normalizes confidence_score to 0-1 range if it was 0-100
     if payload.get("confidence_score") and payload["confidence_score"] > 1:
         payload["confidence_score"] = payload["confidence_score"] / 100
     return payload
 
 
 @registry.register("DecisionGenerated", 1)
-def decision_generated_v1_to_v2(payload: Dict[str, Any]) -> Dict[str, Any]:
+def decision_generated_v1_to_v2(payload: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
     DecisionGenerated v1 → v2
     v1 lacked `risk_score_breakdown`. Add default structure.

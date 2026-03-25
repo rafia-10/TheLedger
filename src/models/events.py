@@ -109,6 +109,9 @@ class AgentContextLoaded(BaseModel):
     event_replay_from_position: int
     context_token_count: int
     model_version: str
+    context_text_summary: Optional[str] = None
+    token_budget: int = 10000
+    health_status: str = "HEALTHY" # HEALTHY, DEGRADED, NEEDS_RECONCILIATION
 
 class CreditAnalysisCompleted(BaseModel):
     application_id: str

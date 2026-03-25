@@ -10,83 +10,74 @@ This module provides utilities to:
 from typing import Dict, Any, List, Optional
 from src.event_store import EventStore
 from src.models.events import StoredEvent
+from src.models.context import AgentContext, DecisionSummary
 
 
 async def reconstruct_agent_context(
     store: EventStore,
     agent_id: str,
     session_id: str,
-) -> Dict[str, Any]:
+) -> AgentContext:
     """
     Replay an agent session's events and reconstruct its working context.
-
-    Returns a dict with:
-        - agent_id, session_id
-        - context_loaded: bool
-        - model_version: str or None
-        - decisions_made: list of decision summaries
-        - unfinished_work: bool (context loaded but no decisions completed)
-        - total_events: int
-        - last_position: int (for incremental replay)
-        - events: list of raw event dicts
+    Matches the Mastery spec for token budgeting and health tracking.
     """
     stream_id = f"agent-{agent_id}-{session_id}"
     events: List[StoredEvent] = await store.load_stream(stream_id)
 
-    context: Dict[str, Any] = {
-        "agent_id": agent_id,
-        "session_id": session_id,
-        "stream_id": stream_id,
-        "context_loaded": False,
-        "model_version": None,
-        "decisions_made": [],
-        "unfinished_work": False,
-        "total_events": len(events),
-        "last_position": events[-1].stream_position if events else 0,
-        "events": [],
-    }
+    ctx = AgentContext(
+        agent_id=agent_id,
+        session_id=session_id,
+        stream_id=stream_id,
+        total_events=len(events),
+        last_position=events[-1].stream_position if events else 0
+    )
 
     for event in events:
-        context["events"].append({
-            "event_type": event.event_type,
-            "stream_position": event.stream_position,
-            "payload": event.payload,
-            "recorded_at": event.recorded_at.isoformat() if event.recorded_at else None,
-        })
-
         if event.event_type == "AgentContextLoaded":
-            context["context_loaded"] = True
-            context["model_version"] = event.payload.get("model_version")
+            ctx.context_loaded = True
+            ctx.model_version = event.payload.get("model_version")
+            ctx.token_budget = event.payload.get("token_budget", 20000)
+            ctx.tokens_used = event.payload.get("context_token_count", 0)
+            ctx.health_status = event.payload.get("health_status", "HEALTHY")
+            ctx.context_text_summary = event.payload.get("context_text_summary")
 
         elif event.event_type == "CreditAnalysisCompleted":
-            context["decisions_made"].append({
-                "type": "CreditAnalysis",
-                "application_id": event.payload.get("application_id"),
-                "risk_tier": event.payload.get("risk_tier"),
-                "confidence": event.payload.get("confidence_score"),
-            })
+            ctx.decisions_made.append(DecisionSummary(
+                type="CreditAnalysis",
+                application_id=event.payload.get("application_id"),
+                risk_tier=event.payload.get("risk_tier"),
+                confidence=event.payload.get("confidence_score"),
+            ))
+            # Track token usage (heuristic)
+            ctx.tokens_used += event.payload.get("analysis_duration_ms", 100) // 10
 
         elif event.event_type == "FraudScreeningCompleted":
-            context["decisions_made"].append({
-                "type": "FraudScreening",
-                "application_id": event.payload.get("application_id"),
-                "fraud_score": event.payload.get("fraud_score"),
-            })
+            ctx.decisions_made.append(DecisionSummary(
+                type="FraudScreening",
+                application_id=event.payload.get("application_id"),
+                fraud_score=event.payload.get("fraud_score"),
+            ))
+
+    # Business Logic: Token Budget Enforcement
+    if ctx.tokens_used > ctx.token_budget:
+        ctx.needs_reconciliation = True
+        ctx.health_status = "NEEDS_RECONCILIATION"
 
     # Detect unfinished work: context loaded but no decisions completed
-    if context["context_loaded"] and len(context["decisions_made"]) == 0:
-        context["unfinished_work"] = True
+    if ctx.context_loaded and len(ctx.decisions_made) == 0:
+        ctx.unfinished_work = True
+        ctx.pending_work.append("Complete initial analysis")
 
-    return context
+    return ctx
 
 
 async def find_unfinished_sessions(
     store: EventStore,
     agent_id: str,
-) -> List[Dict[str, Any]]:
+) -> List[AgentContext]:
     """
-    Scan all streams for an agent and identify sessions with unfinished work.
-    Returns a list of session contexts where work was started but not completed.
+    Scan all streams for an agent and identify sessions with unfinished work or reconciliation needs.
     """
     # Query event_streams for all agent sessions
     async with store.transaction() as conn:
@@ -96,17 +87,18 @@ async def find_unfinished_sessions(
         )
 
     unfinished = []
+    prefix = f"agent-{agent_id}-"
     for row in rows:
         stream_id = row["stream_id"]
-        # Extract session_id from stream_id: "agent-{agent_id}-{session_id}"
-        parts = stream_id.split("-", 2)
-        if len(parts) >= 3:
-            session_id = parts[2]  # everything after "agent-{agent_id}-"
-        else:
+        if not stream_id.startswith(prefix):
+            continue
+            
+        session_id = stream_id[len(prefix):]
+        if not session_id:
             continue
 
         ctx = await reconstruct_agent_context(store, agent_id, session_id)
-        if ctx["unfinished_work"]:
+        if ctx.unfinished_work or ctx.needs_reconciliation:
             unfinished.append(ctx)
 
     return unfinished
