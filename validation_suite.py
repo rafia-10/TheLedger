@@ -292,16 +292,17 @@ async def step_6_what_if_counterfactual(store: EventStore):
     
     app_id = f"what-if-{int(time.time())}"
     stream_id = f"loan-{app_id}"
+    session_id = f"s-{int(time.time())}"
     
     # 1. Create original stream via real handlers
     console.print("Original Scenario: Risk Tier = MEDIUM")
     await handle_submit_application(store, app_id, "potential-customer", 12000, "Home", "Mobile")
     
     # Gas Town enforcement: Agent must start session
-    await handle_start_agent_session(store, "risk-agent", "s1", "Legacy-System", 0, 100, "v1.0")
+    await handle_start_agent_session(store, "risk-agent", session_id, "Legacy-System", 0, 100, "v1.0")
     
     await handle_credit_analysis_completed(
-        store, app_id, "risk-agent", "s1", "v1.0", 0.7, "MEDIUM", 12000, 30, {"f": 650}
+        store, app_id, "risk-agent", session_id, "v1.0", 0.7, "MEDIUM", 12000, 30, {"f": 650}
     )
     
     # 2. Load the real events we just created
