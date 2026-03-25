@@ -67,12 +67,13 @@ class EventStore:
             
             current_version = row["current_version"] if row else 0
             
-            if expected_version != -1 and current_version != expected_version:
-                raise OptimisticConcurrencyError(stream_id, expected_version, current_version)
-            
-            if expected_version == -1 and row:
-                 if current_version > 0:
-                     raise OptimisticConcurrencyError(stream_id, -1, current_version)
+            # Allow None to bypass OCC checks
+            if expected_version is not None:
+                if expected_version != -1 and current_version != expected_version:
+                    raise OptimisticConcurrencyError(stream_id, expected_version, current_version)
+                
+                if expected_version == -1 and row and current_version > 0:
+                    raise OptimisticConcurrencyError(stream_id, -1, current_version)
 
             new_version = current_version
             
