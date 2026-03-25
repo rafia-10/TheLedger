@@ -15,7 +15,7 @@ The Ledger is a production-quality event sourcing infrastructure built on Postgr
 
 ### Prerequisites
 - Python 3.12+
-- PostgreSQL 16+
+- PostgreSQL 16+ (Local installation)
 - [uv](https://github.com/astral-sh/uv) (for dependency management)
 
 ### Installation
@@ -23,30 +23,40 @@ The Ledger is a production-quality event sourcing infrastructure built on Postgr
 uv sync
 ```
 
-### Database Setup
-If you have a local postgres instance:
+### Local Database Setup
+1. Ensure your local PostgreSQL is running.
+2. Create the database:
+   ```bash
+   createdb eventledger
+   ```
+3. Initialize the schema:
+   ```bash
+   psql -d eventledger -f src/schema.sql
+   ```
+
+## Validation Suite (The Big 6)
+A comprehensive validation suite is provided to demonstrate the core architectural capabilities of **The Ledger**.
+
+### Run All Steps
 ```bash
-PGPASSWORD=supabase1224 psql -h db.dxscaeckamkplshxqkae.supabase.co -p 5432 -U postgres -d postgres -f src/schema.sql
+./.venv/bin/python3 validation_suite.py --all
 ```
 
-### Running the Showroom Demo (The Big 5)
-A comprehensive demonstration script is provided to showcase the 5 core features: Live Workflow, Event Log, Dashboard Projections, Concurrency, and Replay & Upcasting.
+### Run Individual Steps
+- **Step 1 (Audit Trail):** `./.venv/bin/python3 validation_suite.py --step 1`
+- **Step 2 (Concurrency):** `./.venv/bin/python3 validation_suite.py --step 2`
+- **Step 3 (Temporal Query):** `./.venv/bin/python3 validation_suite.py --step 3`
+- **Step 4 (Upcasting):** `./.venv/bin/python3 validation_suite.py --step 4`
+- **Step 5 (Resilience):** `./.venv/bin/python3 validation_suite.py --step 5`
+- **Step 6 (Simulation):** `./.venv/bin/python3 validation_suite.py --step 6`
 
-```bash
-export PYTHONPATH=$PYTHONPATH:.
-uv run python demo_full_lifecycle.py
-```
-
-## Running Tests
-The test suite validates concurrency, integrity, and projections.
-
-```bash
-uv run pytest tests/test_concurrency.py tests/test_integrity.py tests/test_projections.py
-```
+## Documentation
+- **[VALIDATION_GUIDE.md](VALIDATION_GUIDE.md)**: Detailed commands and expected outputs for each validation step.
+- **[PRESENTATION_GUIDE.md](PRESENTATION_GUIDE.md)**: Talking points and "wow factors" for client demonstrations.
+- **[DOMAIN_NOTES.md](DOMAIN_NOTES.md)**: Technical architecture and design rationale.
 
 ## Project Structure
 - `src/schema.sql`: PostgreSQL schema and projection tables.
 - `src/event_store.py`: Core `EventStore` with cryptographic chaining.
 - `src/mcp/server.py`: FastMCP server for tool and resource exposure.
-- `demo_full_lifecycle.py`: High-fidelity showroom demonstration.
-- `DOMAIN_NOTES.md`: Technical architecture and design rationale.
+- `validation_suite.py`: The unified 6-step validation demonstration script.
