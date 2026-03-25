@@ -33,15 +33,18 @@ class UpcasterRegistry:
         effective_metadata = event.metadata.copy()
         effective_metadata["recorded_at"] = event.recorded_at
 
+        # logger.debug(f"Attempting to upcast {event.event_type} v{current_version}")
         while True:
             upcaster = self._upcasters.get((event.event_type, current_version))
             if not upcaster:
                 break
 
+            # print(f"DEBUG: Upcasting {event.event_type} from {current_version}")
             current_payload = upcaster(current_payload, effective_metadata)
             current_version += 1
 
         if current_version != event.event_version:
+            # print(f"DEBUG: Event {event.event_id} upcast to v{current_version}")
             return event.with_payload(current_payload, current_version)
         return event
 

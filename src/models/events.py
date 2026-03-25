@@ -86,6 +86,20 @@ class HumanReviewCompleted(BaseModel):
     final_decision: str
     override_reason: Optional[str] = None
 
+class IntegrityCheckPerformed(BaseModel):
+    stream_id: str
+    status: str # VALID, COMPROMISED
+    events_checked: int
+    checked_at: datetime
+
+class TamperingDetected(BaseModel):
+    stream_id: str
+    event_id: str
+    stream_position: int
+    expected_hash: str
+    found_hash: str
+    detected_at: datetime
+
 class ApplicationApproved(BaseModel):
     application_id: str
     approved_amount_usd: float

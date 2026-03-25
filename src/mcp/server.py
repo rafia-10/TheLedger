@@ -70,6 +70,7 @@ def format_domain_error(e: DomainError) -> Dict[str, Any]:
     """Mastery: Provide a structured error object with a suggested_action for LLMs."""
     msg = str(e)
     suggestion = "Consistently check preconditions before calling this tool."
+    context = {}
     
     if "already exists" in msg:
         suggestion = "Use a unique application_id or query the existing one."
@@ -77,15 +78,19 @@ def format_domain_error(e: DomainError) -> Dict[str, Any]:
         suggestion = "Call start_agent_session before performing any analysis."
     elif "Compliance status" in msg:
         suggestion = "Record all mandatory compliance checks (Passed) before generating a decision."
+        context = {"required_checks": ["KYC", "AML", "Fraud"]}
     elif "Token budget exceeded" in msg:
         suggestion = "Start a new session or request a budget increase if authorized."
     elif "Invalid state transition" in msg:
         suggestion = "Consult the state machine (Rule 6) to ensure sequential processing."
+        # Extract states if possible from the error message
+        context = {"rules_set": "EventLedger-Mastery-v1"}
 
     return {
         "status": "ERROR",
         "error_type": "DomainRuleViolation",
         "message": msg,
+        "context": context,
         "suggested_action": suggestion
     }
 
@@ -355,7 +360,6 @@ async def get_application_summary(application_id: str) -> str:
             return f"Application {application_id} not found."
         return str(dict(row))
 
-
 @mcp.resource("projections://compliance-view/{application_id}")
 async def get_compliance_view(application_id: str) -> str:
     """Get current compliance status for an application (from projections)."""
@@ -370,6 +374,20 @@ async def get_compliance_view(application_id: str) -> str:
         )
         if not rows:
             return f"No compliance data for {application_id}."
+        return str([dict(r) for r in rows])
+
+
+@mcp.resource("projections://compliance-audit-history/{application_id}")
+async def get_compliance_history(application_id: str) -> str:
+    """Get the full chronological history of all compliance events for an application."""
+    await store.connect()
+    async with store.transaction() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM compliance_audit WHERE application_id = $1 ORDER BY global_position ASC",
+            application_id,
+        )
+        if not rows:
+            return f"No compliance history for {application_id}."
         return str([dict(r) for r in rows])
 
 

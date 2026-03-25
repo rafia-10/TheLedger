@@ -11,7 +11,7 @@ import json
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from src.event_store import EventStore
-from src.models.events import StoredEvent
+from src.models.events import StoredEvent, BaseEvent, IntegrityCheckPerformed, TamperingDetected
 
 
 class AuditChain:
@@ -103,17 +103,52 @@ class AuditChain:
 
     @classmethod
     async def run_integrity_check(
-        cls, store: EventStore, stream_id: str
+        cls, store: EventStore, stream_id: str, record_event: bool = True
     ) -> Dict[str, Any]:
         """Run a full integrity check and return a structured report."""
         events = await store.load_stream(stream_id)
         is_valid = await cls.verify_chain(store, stream_id)
-        tampered = await cls.detect_tampering(store, stream_id) if not is_valid else []
+        tampered_details = await cls.detect_tampering(store, stream_id) if not is_valid else []
+
+        status = "VALID" if is_valid else "COMPROMISED"
+        
+        if record_event:
+            # Record the check itself
+            check_event = BaseEvent(
+                event_type="IntegrityCheckPerformed",
+                payload=IntegrityCheckPerformed(
+                    stream_id=stream_id,
+                    status=status,
+                    events_checked=len(events),
+                    checked_at=datetime.now()
+                ).model_dump(mode="json")
+            )
+            # Record each tampering incident
+            alerts = [
+                BaseEvent(
+                    event_type="TamperingDetected",
+                    payload=TamperingDetected(
+                        stream_id=stream_id,
+                        event_id=str(t["event_id"]),
+                        stream_position=t["stream_position"],
+                        expected_hash=t["expected_hash"],
+                        found_hash=t["stored_hash"],
+                        detected_at=datetime.now()
+                    ).model_dump(mode="json")
+                ) for t in tampered_details
+            ]
+            
+            # Append to audit stream
+            await store.append(
+                stream_id=f"audit-log-{stream_id}",
+                events=[check_event] + alerts,
+                expected_version=None
+            )
 
         return {
             "stream_id": stream_id,
             "events_verified": len(events),
-            "integrity_status": "VALID" if is_valid else "COMPROMISED",
-            "tampered_events": tampered,
+            "integrity_status": status,
+            "tampered_events": tampered_details,
             "checked_at": datetime.now().isoformat(),
         }

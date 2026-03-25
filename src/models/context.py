@@ -25,6 +25,10 @@ class AgentContext(BaseModel):
     context_text_summary: Optional[str] = None
     pending_work: List[str] = Field(default_factory=list)
     needs_reconciliation: bool = False
+    
+    # Mastery Fields
+    summarized_at_position: Optional[int] = None
+    preserved_events_count: int = 0
 
     def is_healthy(self) -> bool:
         return self.health_status == "HEALTHY" and not self.needs_reconciliation

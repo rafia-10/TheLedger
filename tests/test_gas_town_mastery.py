@@ -57,7 +57,16 @@ async def test_gas_town_mastery():
     assert ctx_2.needs_reconciliation is True
     assert ctx_2.health_status == "NEEDS_RECONCILIATION"
 
-    # ─── 3. Test find_unfinished_sessions ───
+    # ─── 3. Test Summarization & Preservation ───
+    console.print(f"🔍 Session 2 Summarized: {ctx_2.summarized_at_position is not None}")
+    console.print(f"🔍 Session 2 Preserved Events: {ctx_2.preserved_events_count}")
+    console.print(f"🔍 Session 2 Summary Content: [italic]{ctx_2.context_text_summary}[/]")
+    
+    assert ctx_2.summarized_at_position is not None
+    assert ctx_2.preserved_events_count >= 3 # Last 3 are preserved
+    assert "SUMMARY AT POS" in ctx_2.context_text_summary
+
+    # ─── 4. Test find_unfinished_sessions ───
     unfinished = await find_unfinished_sessions(store, agent_id)
     console.print(f"📋 Found {len(unfinished)} sessions requiring attention for agent {agent_id}")
     

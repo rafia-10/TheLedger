@@ -20,9 +20,10 @@ class Projection(ABC):
         pass
 
 class ProjectionDaemon:
-    def __init__(self, store: EventStore, projections: List[Projection]):
+    def __init__(self, store: EventStore, projections: List[Projection], upcaster: Optional[Any] = None):
         self._store = store
         self._projections = {p.name: p for p in projections}
+        self._upcaster = upcaster # Registry to use for read-time schema evolution
         self._running = False
         self._batch_size = 500
 
@@ -54,17 +55,20 @@ class ProjectionDaemon:
         4. Update checkpoints.
         """
         async with self._store.transaction() as conn:
-            # Get checkpoints
-            checkpoints = await self._get_checkpoints(conn)
-            if not checkpoints:
-                # Initialize checkpoints if missing
-                for name in self._projections:
-                    if name not in checkpoints:
-                        await conn.execute(
-                            "INSERT INTO projection_checkpoints (projection_name, last_position) VALUES ($1, 0) ON CONFLICT DO NOTHING",
-                            name
-                        )
-                checkpoints = await self._get_checkpoints(conn)
+            # 1. Load existing from DB
+            existing = await self._get_checkpoints(conn)
+            
+            # 2. Ensure all known projections have a checkpoint (initialize if missing)
+            checkpoints = {}
+            for name in self._projections:
+                if name not in existing:
+                    await conn.execute(
+                        "INSERT INTO projection_checkpoints (projection_name, last_position) VALUES ($1, 0) ON CONFLICT DO NOTHING",
+                        name
+                    )
+                    checkpoints[name] = 0
+                else:
+                    checkpoints[name] = existing[name]
             
             min_pos = min(checkpoints.values()) if checkpoints else 0
             
@@ -77,7 +81,12 @@ class ProjectionDaemon:
             if not rows:
                 return 0
 
-            events = [self._row_to_event(row) for row in rows]
+            events = []
+            for row in rows:
+                event = self._row_to_event(row)
+                if self._upcaster:
+                    event = self._upcaster.upcast(event)
+                events.append(event)
             
             for event in events:
                 for name, projection in self._projections.items():
@@ -100,6 +109,28 @@ class ProjectionDaemon:
                 )
                 
             return len(events)
+
+    async def rebuild_from_scratch(self) -> None:
+        """
+        Mastery: Rebuild all projections by resetting checkpoints and clear tables.
+        In a production scenario, we might use a shadow table and swap.
+        For this implementation, we use TRUNCATE for simplicity.
+        """
+        async with self._store.transaction() as conn:
+            logger.info("🔥 Rebuilding projections from scratch...")
+            # 1. Reset Checkpoints
+            await conn.execute("UPDATE projection_checkpoints SET last_position = 0")
+            
+            # 2. Truncate Projection Tables (identified by projection names)
+            # In a real system, each projection would define its table name(s)
+            tables = ["application_summary", "agent_performance", "compliance_audit"]
+            for table in tables:
+                await conn.execute(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE")
+            
+            logger.info("✅ Projections reset. Re-processing events...")
+        
+        # 3. Process first batch immediately
+        await self._process_batch()
 
     async def _get_checkpoints(self, conn) -> Dict[str, int]:
         rows = await conn.fetch("SELECT projection_name, last_position FROM projection_checkpoints")

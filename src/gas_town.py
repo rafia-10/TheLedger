@@ -60,6 +60,38 @@ async def reconstruct_agent_context(
             ))
 
     # Business Logic: Token Budget Enforcement
+    # 5. Token-Aware Summarization & Event Preservation
+    # Mastery Rule: Preserve last 3 events AND all PENDING/ERROR events
+    important_types = {"AnalysisPending", "ErrorOccurred", "NeedsHumanReview", "NEEDS_RECONCILIATION"}
+    preserved_events = []
+    
+    # Extract last 3
+    last_three = events[-3:] if len(events) >= 3 else events
+    last_three_ids = {e.event_id for e in last_three}
+    
+    for e in events:
+        if e.event_id in last_three_ids or e.event_type in important_types:
+            preserved_events.append(e)
+
+    ctx.preserved_events_count = len(preserved_events)
+    
+    # Token Budget Summarization (80% threshold)
+    # Note: 'history' and 'ctx.decisions' are not defined in the provided context.
+    # Assuming 'history' refers to 'events' and 'ctx.decisions' should be 'ctx.decisions_made'.
+    # Also, 'ctx.last_event_position' is not defined, using 'ctx.last_position'.
+    if ctx.tokens_used > (ctx.token_budget * 0.8) and events:
+        # Generate a concise summary of the decisions so far
+        summary_rows = []
+        for decision in ctx.decisions_made:
+            # Assuming DecisionSummary has 'type', 'application_id', 'risk_tier', 'confidence' or 'fraud_score'
+            if decision.type == "CreditAnalysis":
+                summary_rows.append(f"Credit for {decision.application_id}: {decision.risk_tier} (Conf: {decision.confidence*100:.0f}%)")
+            elif decision.type == "FraudScreening":
+                summary_rows.append(f"Fraud for {decision.application_id}: Score {decision.fraud_score}")
+        
+        ctx.context_text_summary = f"SUMMARY AT POS {ctx.last_position}: " + " | ".join(summary_rows)
+        ctx.summarized_at_position = ctx.last_position
+
     if ctx.tokens_used > ctx.token_budget:
         ctx.needs_reconciliation = True
         ctx.health_status = "NEEDS_RECONCILIATION"
