@@ -25,7 +25,7 @@ class ComplianceAuditProjection(Projection):
                 payload["application_id"], payload["rule_id"], payload["rule_version"],
                 "PASSED" if event.event_type == "ComplianceRulePassed" else "FAILED",
                 payload.get("failure_reason"), event.recorded_at, 
-                payload["evidence_hash"], event.global_position
+                payload.get("evidence_hash"), event.global_position
             )
 
     async def get_compliance_at(self, store, application_id: str, timestamp: datetime) -> List[Dict]:

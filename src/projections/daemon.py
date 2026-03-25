@@ -42,6 +42,10 @@ class ProjectionDaemon:
     def stop(self):
         self._running = False
 
+    async def run_once(self) -> int:
+        """Process a single batch of events and return count."""
+        return await self._process_batch()
+
     async def _process_batch(self) -> int:
         """
         1. Find the lowest checkpoint across all projections.

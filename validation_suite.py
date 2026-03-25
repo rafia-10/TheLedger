@@ -17,8 +17,18 @@ from src.models.events import BaseEvent, CreditAnalysisCompleted, OptimisticConc
 from src.gas_town import reconstruct_agent_context
 from src.what_if import WhatIfSimulator
 from src.projections.compliance_audit import ComplianceAuditProjection
+from src.projections.application_summary import ApplicationSummaryProjection
+from src.projections.agent_performance import AgentPerformanceProjection
 from src.projections.daemon import ProjectionDaemon
 from src.upcasting.registry import registry as upcaster_registry
+from src.aggregates.loan_application import LoanApplicationAggregate, ApplicationState
+from src.commands.handlers import (
+    handle_submit_application,
+    handle_start_agent_session,
+    handle_credit_analysis_completed,
+    handle_record_compliance_check,
+    handle_generate_decision
+)
 
 load_dotenv()
 
@@ -44,15 +54,31 @@ async def step_1_the_week_standard(store: EventStore, application_id: str = "dem
     events = await store.load_stream(stream_id)
     
     if not events:
-        console.print(f"[yellow]No events found for {stream_id}. Appending demo events...[/]")
-        demo_events = [
-            BaseEvent(event_type="ApplicationSubmitted", payload={"applicant_id": application_id, "requested_amount_usd": 50000}),
-            BaseEvent(event_type="AgentContextLoaded", payload={"agent_id": "agent-007", "session_id": "sess-01"}),
-            BaseEvent(event_type="CreditAnalysisCompleted", payload={"application_id": application_id, "risk_tier": "MEDIUM", "confidence_score": 0.85, "agent_id": "agent-007", "session_id": "sess-01"}),
-            BaseEvent(event_type="ComplianceRulePassed", payload={"application_id": application_id, "rule_id": "KYC", "rule_version": "1.0", "evidence_hash": "hash_abc"}),
-            BaseEvent(event_type="DecisionGenerated", payload={"application_id": application_id, "decision": "APPROVED", "amount": 50000}),
-        ]
-        await store.append(stream_id, demo_events, expected_version=-1)
+        console.print(f"[yellow]No events found for {stream_id}. Appending real domain events via handlers...[/]")
+        
+        # Phase 1: Real Submission
+        await handle_submit_application(store, application_id, "applicant-hardened", 50000.0, "Business Expansion", "API")
+        
+        # Phase 2: Real Agent Session & Analysis
+        agent_id = "credit-agent-007"
+        session_id = str(uuid.uuid4())[:8]
+        await handle_start_agent_session(store, agent_id, session_id, "VectorDB-KYC", 0, 450, "v1.1")
+        
+        await handle_credit_analysis_completed(
+            store, application_id, agent_id, session_id, "v1.1", 0.88, "TIER_A", 50000.0, 120, {"fico": 720}
+        )
+        
+        # Phase 3: Compliance
+        await handle_record_compliance_check(
+            store, application_id, "KYC-01", "v1", True, {"id_verified": True}
+        )
+        
+        # Phase 4: Decision
+        await handle_generate_decision(
+            store, application_id, "decision-engine", "APPROVE", 0.92, [f"{agent_id}-{session_id}"], 
+            "Matches all risk criteria.", {"credit": "v1.1"}
+        )
+        
         events = await store.load_stream(stream_id)
 
     # 2. Display the Event Table
@@ -99,45 +125,49 @@ async def step_2_concurrency_under_pressure(store: EventStore):
     """
     console.print(Panel("[bold blue]Step 2: Concurrency Under Pressure[/]", expand=False))
     
-    stream_id = f"concurrency-test-{int(time.time())}"
+    app_id = f"concurrency-app-{int(time.time())}"
     
-    # Setup initial state
-    await store.append(stream_id, [BaseEvent(event_type="TestStarted", payload={})], expected_version=-1)
-    current_version = await store.stream_version(stream_id)
-    console.print(f"Stream initialized at version: {current_version}")
-
-    event_a = BaseEvent(event_type="AgentAction", payload={"agent": "A"})
-    event_b = BaseEvent(event_type="AgentAction", payload={"agent": "B"})
-
+    # 1. Setup: Real Submission
+    await handle_submit_application(store, app_id, "applicant-occ", 10000.0, "Testing", "CLI")
+    app = await LoanApplicationAggregate.load(store, app_id)
+    
+    console.print(f"Stream 'loan-{app_id}' initialized at version: {app.version}")
+    
+    # 2. Parallel Decisions: Two agents trying to approve same app
     results = []
 
-    async def worker(name, event, version):
-        console.print(f"[dim]Agent {name} attempting to append at version {version}...[/]")
+    async def worker(agent_name, rec):
+        console.print(f"[dim]Agent {agent_name} attempting to generate decision at version {app.version}...[/]")
         try:
-            new_v = await store.append(stream_id, [event], expected_version=version)
-            results.append(f"Agent {name}: SUCCESS (New Version: {new_v})")
+            new_v = await handle_generate_decision(
+                store, app_id, agent_name, rec, 0.95, [], "Verified via occ.", {"model": "v1"},
+                expected_version=app.version
+            )
+            results.append(f"Agent {agent_name}: SUCCESS (New Version: {new_v})")
             return True
         except OptimisticConcurrencyError as e:
-            results.append(f"Agent {name}: [bold red]FAILURE (Error: {e})[/]")
+            results.append(f"Agent {agent_name}: [bold red]FAILURE (Error: {e})[/]")
             return False
 
     # Run concurrently
     console.print("Launching concurrent appends...")
     await asyncio.gather(
-        worker("A", event_a, current_version),
-        worker("B", event_b, current_version)
+        worker("Agent-Alpha", "APPROVE"),
+        worker("Agent-Beta", "DECLINE")
     )
 
     for r in results:
         console.print(r)
 
-    # Retry logic demonstration
+    # 3. Retry logic demonstration
     console.print("\n[bold yellow]Demonstrating Automatic Retry for the failed agent...[/]")
-    retry_version = await store.stream_version(stream_id)
-    console.print(f"Retrying at current version: {retry_version}")
-    await worker("B (Retry)", event_b, retry_version)
+    app_retry = await LoanApplicationAggregate.load(store, app_id)
+    console.print(f"Retrying at current version: {app_retry.version}")
+    await handle_generate_decision(
+        store, app_id, "Agent-Beta (Retry)", "DECLINE", 0.95, [], "Retrying after conflict.", {"model": "v1"}
+    )
     
-    final_version = await store.stream_version(stream_id)
+    final_version = (await LoanApplicationAggregate.load(store, app_id)).version
     console.print(f"Final Stream Version: {final_version}")
 
 async def step_3_temporal_compliance_query(store: EventStore):
@@ -153,19 +183,15 @@ async def step_3_temporal_compliance_query(store: EventStore):
     
     # 1. State at T1: KYC Passed
     t1_time = datetime.now()
-    await store.append(f"loan-{app_id}", [
-        BaseEvent(event_type="ComplianceRulePassed", payload={"application_id": app_id, "rule_id": "KYC", "rule_version": "1.0", "evidence_hash": "h1"})
-    ], expected_version=-1)
+    await handle_record_compliance_check(store, app_id, "KYC", "v1", True, {"id": "verified"})
     
     # 2. State at T2: AML Failed (later)
     await asyncio.sleep(1) # Ensure timestamp difference
     t2_time = datetime.now()
-    await store.append(f"loan-{app_id}", [
-        BaseEvent(event_type="ComplianceRuleFailed", payload={"application_id": app_id, "rule_id": "AML", "rule_version": "1.0", "evidence_hash": "h2", "failure_reason": "High risk flag"})
-    ], expected_version=1)
+    await handle_record_compliance_check(store, app_id, "AML", "v1", False, {"risk": "high"}, failure_reason="Listed")
     
     # 3. Process into projection
-    await daemon._process_batch()
+    await daemon.run_once() # Run real loop once
     
     # 4. Query T1
     console.print(f"Querying state at T1: {t1_time.isoformat()}")
@@ -184,32 +210,37 @@ async def step_4_upcasting_and_immutability(store: EventStore):
     """
     console.print(Panel("[bold blue]Step 4: Upcasting & Immutability[/]", expand=False))
     
-    stream_id = f"upcast-test-{int(time.time())}"
+    app_id = f"upcast-app-{int(time.time())}"
+    stream_id = f"loan-{app_id}"
     
-    # 1. Manually insert v1 event (bypassing normal appends for demo)
+    # 1. Start with a real submission
+    await handle_submit_application(store, app_id, "upcast-user", 25000, "Refactor", "Web")
+    
+    # 2. Inject a v1 event manually into this real stream
     async with store.transaction() as conn:
         await conn.execute(
             """
             INSERT INTO events (stream_id, stream_position, event_type, event_version, payload, metadata)
-            VALUES ($1, 1, 'CreditAnalysisCompleted', 1, '{"application_id": "test", "confidence_score": 95}', '{}')
+            VALUES ($1, 2, 'CreditAnalysisCompleted', 1, '{"application_id": "test", "confidence_score": 95}', '{}')
             """,
             stream_id
         )
         await conn.execute(
-            "INSERT INTO event_streams (stream_id, aggregate_type, current_version) VALUES ($1, 'loan', 1)",
+            "UPDATE event_streams SET current_version = 2 WHERE stream_id = $1",
             stream_id
         )
 
     # 2. Load through EventStore (triggers upcasting)
     events = await store.load_stream(stream_id)
-    upcast_event = events[0]
+    # The upcast event should be the second one (pos 2)
+    upcast_event = events[1]
     
     console.print(f"Loaded Event Version: [bold green]{upcast_event.event_version}[/]")
     console.print(f"Upcast Payload: {upcast_event.payload}")
     
-    # 3. Query DB Raw
+    # 3. Query DB Raw (inspect pos 2)
     async with store.transaction() as conn:
-        raw = await conn.fetchrow("SELECT event_version, payload FROM events WHERE stream_id = $1", stream_id)
+        raw = await conn.fetchrow("SELECT event_version, payload FROM events WHERE stream_id = $1 AND stream_position = 2", stream_id)
         
     console.print(f"Raw DB Version: [bold yellow]{raw['event_version']}[/]")
     console.print(f"Raw DB Payload: {raw['payload']}")
@@ -226,18 +257,20 @@ async def step_5_gas_town_recovery(store: EventStore):
     
     agent_id = "agent-delta"
     session_id = f"sess-{int(time.time())}"
+    app_id = f"gas-app-{int(time.time())}"
     stream_id = f"agent-{agent_id}-{session_id}"
     
-    # 1. Start session
+    # 0. Background setup: real app must exist
+    await handle_submit_application(store, app_id, "gas-applicant", 10000.0, "Recovery", "Agent")
+
+    # 1. Start session via handler
     console.print("Agent starting work...")
-    await store.append(stream_id, [
-        BaseEvent(event_type="AgentContextLoaded", payload={"agent_id": agent_id, "model_version": "gpt-4-v2"})
-    ], expected_version=-1)
+    await handle_start_agent_session(store, agent_id, session_id, "LocalCache", 0, 150, "v2.0")
     
-    # 2. Partial work
-    await store.append(stream_id, [
-        BaseEvent(event_type="CreditAnalysisCompleted", payload={"application_id": "app-999", "risk_tier": "LOW", "confidence_score": 0.99})
-    ], expected_version=1)
+    # 2. Partial work via handler
+    await handle_credit_analysis_completed(
+        store, app_id, agent_id, session_id, "v2.0", 0.95, "TIER_A", 10000.0, 45, {"data": "x"}
+    )
     
     console.print("[bold red]SIMULATING CRASH... Agent process killed.[/]")
     
@@ -257,45 +290,42 @@ async def step_6_what_if_counterfactual(store: EventStore):
     """
     console.print(Panel("[bold blue]Step 6: What-If Counterfactual[/]", expand=False))
     
-    app_id = "what-if-demo"
+    app_id = f"what-if-{int(time.time())}"
     stream_id = f"loan-{app_id}"
     
-    # Setup: Medium risk app
-    events = [
-        BaseEvent(event_type="ApplicationSubmitted", payload={"applicant_id": "applicant-123", "requested_amount_usd": 10000}),
-        BaseEvent(event_type="CreditAnalysisCompleted", payload={"application_id": app_id, "risk_tier": "MEDIUM", "confidence_score": 0.7, "agent_id": "agent-007", "session_id": "sess-01"}),
-    ]
-    # Small hack: we need to make sure the aggregate logic handles this. 
-    # The aggregate typically decides based on rules. 
-    # If risk is HIGH, maybe it declines.
+    # 1. Create original stream via real handlers
+    console.print("Original Scenario: Risk Tier = MEDIUM")
+    await handle_submit_application(store, app_id, "potential-customer", 12000, "Home", "Mobile")
+    
+    # Gas Town enforcement: Agent must start session
+    await handle_start_agent_session(store, "risk-agent", "s1", "Legacy-System", 0, 100, "v1.0")
+    
+    await handle_credit_analysis_completed(
+        store, app_id, "risk-agent", "s1", "v1.0", 0.7, "MEDIUM", 12000, 30, {"f": 650}
+    )
+    
+    # 2. Load the real events we just created
+    original = await store.load_stream(stream_id)
     
     sim = WhatIfSimulator(store)
     
-    # 1. Create original stream
-    console.print("Original Scenario: Risk Tier = MEDIUM")
-    # We don't necessarily need to persist it if we have the events list
-    # But let's build a fake "StoredEvent" list
-    original = []
-    for i, e in enumerate(events):
-        original.append(StoredEvent(
-            event_id=uuid.uuid4(), stream_id=stream_id, stream_position=i+1, global_position=i+1,
-            event_type=e.event_type, event_version=e.event_version, payload=e.payload, metadata={}, recorded_at=datetime.now()
-        ))
-    
-    # 2. Modify: Change MEDIUM to HIGH at position 2
+    # 3. Modify: Change MEDIUM to HIGH in the second event
     modified = sim.modify_events(original, [
         {"action": "alter", "position": 2, "changes": {"risk_tier": "HIGH"}}
     ])
     
     console.print("Modified Scenario: Risk Tier = HIGH")
     
-    # 3. Compare
+    # 4. Compare
     comparison = sim.compare(original, modified)
     
     console.print("\n[bold]Outcome Comparison:[/]")
     diffs = comparison["differences"]
     for field, vals in diffs.items():
         console.print(f"Field [magenta]{field}[/]: {vals['original']} -> [bold red]{vals['modified']}[/]")
+    
+    if comparison["has_divergence"]:
+        console.print("\n[bold green]✅ Counterfactual Divergence Verified.[/]")
     
     if comparison["has_divergence"]:
         console.print("\n[bold green]✅ Counterfactual Divergence Verified.[/]")
