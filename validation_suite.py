@@ -299,10 +299,10 @@ async def step_5_gas_town_recovery(store: EventStore):
     console.print("[bold green]RESTARTING... Reconstructing context from Ledger.[/]")
     context = await reconstruct_agent_context(store, agent_id, session_id)
     
-    console.print(f"Recovered Agent ID: {context['agent_id']}")
-    console.print(f"Recovered Model Version: {context['model_version']}")
-    console.print(f"Decisions Found: {len(context['decisions_made'])}")
-    console.print(f"Wait, was there unfinished work? [bold cyan]{context['unfinished_work']}[/]")
+    console.print(f"Recovered Agent ID: {context.agent_id}")
+    console.print(f"Recovered Model Version: {context.model_version}")
+    console.print(f"Decisions Found: {len(context.decisions_made)}")
+    console.print(f"Wait, was there unfinished work? [bold cyan]{context.unfinished_work}[/]")
 
 async def step_6_what_if_counterfactual(store: EventStore):
     """
