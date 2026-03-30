@@ -137,6 +137,8 @@ typing-inspection==0.4.2
     #   pydantic
     #   pydantic-settings
 uvicorn==0.42.0
+    # via eventledger (pyproject.toml)
+websockets==16.0
     # via
     #   eventledger (pyproject.toml)
     #   mcp
